@@ -3,17 +3,11 @@
 
 def about():
     print(" Current version:", __version__)
-    print(" update history:", __update_history__)
-    
-to_do="""
-sistema i fit e visualizzazione per esame (togli le linee del grafo, metti le linee dello sfondo, nero, dimensioni multigrafico)
-fit sulla sw_sample uniforme?
-posizione legenda dei fit
-implementa "ometti valore" per non visualizzare il fit sullo zero che incasina il grafico
+    print(" Latest update:", __latest_update__)
 
-"""
+__latest_update__='20/9/2022'
 
-__version__='2.9.2'
+__version__='2.10.3.0'
 
 __update_history__="""
 Version 2.6.x
@@ -46,14 +40,27 @@ Version 2.8.x
 - implemented OPERATION_MODE= 'class' or 'fn' ('class' works with/provides metadata while 'fn' 20% faster)
 - implemented Process.MODE= 'implicit'
 
-
 Version 2.9.x
 - implemented fit functions for Lab objects
 - plotting and manipulation of fit and metrics (inizio gennaio 2022, pausa)
 - introduced default_decision_kw['subaction_par'] (inizio marzo 2022, esame)
 - sistemazioni per report di esame + funzione coefficienti dei fit ha modalità distr e scatter
+
+Version 2.10.x
+0 implemented array listed sentiment values (parallel processing of sentiment) (22/08/22)
+1 implemented onesided gaussian price sampling
+1 implemented operation 'map' in predefined sentiment process
+1 implemented (re) subaction market and kind=noise agents
+2 generalized process management
+2 agents now all have state, process, parameter dictionaries
+2 added activate_beta for behaviour of onesided gaussian 
+3 added decision_stop_days
 """
 
+###TO DO
+# - wrap every process
+# - use uniform for noisy agents (?)
+# - subaction (subchoice) as an operation on its own
 
 import numpy as np
 from numpy.random import beta as Beta 
@@ -150,7 +157,7 @@ OPERATION_MODE='class'
 def Operation(*args, **kwargs): #<-------- name needs to be changes in Operation
     obj= Process(*args, **kwargs)
     if len(obj)>1:
-        raise TypeError("Operation requires one-only function")
+        raise TypeError("Operation requires one function only")
     if OPERATION_MODE.lower() =='class':
         return obj
     if OPERATION_MODE.lower() =='function':  
@@ -790,13 +797,13 @@ def set_program_mode(mode):
     if 'exo' in mode.lower():
         PROGRAM_MODE='exogenous'
         print(f"program mode set to {PROGRAM_MODE}")
-        default_decision_kw['price_fluct']=0.
-        print(f"  allowed price fluctuations set to {default_decision_kw['price_fluct']}")
+        default_parameter['decision']['price_fluct']=0.
+        print(f"  allowed price fluctuations set to {default_parameter['decision']['price_fluct']}")
     elif 'sim' in mode.lower():
         PROGRAM_MODE='simulation'
         print(f"program mode set to {PROGRAM_MODE}")
-        default_decision_kw['price_fluct']=0.001
-        print(f"  allowed price fluctuations set to {default_decision_kw['price_fluct']}")
+        default_parameter['decision']['price_fluct']=0.001
+        print(f"  allowed price fluctuations set to {default_parameter['decision']['price_fluct']}")
     elif 'strat' in mode.lower():
         print("NOT IMPLEMENTED")
     else:
@@ -855,12 +862,14 @@ debug_warn=False
 
 stochastic_mode='mult'
 
+default_parameter={}
+
 #-------------------------------------------------------------------------- default preliminar process
-default_preliminar_kw={}
+default_parameter['preliminar']={}
 
 def preliminar_value_shifting():
     def routine(self):
-        self.last_sentiment=self.sentiment
+        self.state['last_sentiment']=deepcopy(self.state['sentiment']) #deepcopy to include cases where sentiment is an array of values
         return "step value shifting"
     subprocess_fn=lambda ag,**kw: routine(ag)
     return Operation(subprocess_fn, sub_name='value_shifting', name='preliminar', mode='explicit')
@@ -875,43 +884,61 @@ instantiate_def_preliminar= lambda :preliminar_nothing()
 def_preliminar=instantiate_def_preliminar()
 
 #-------------------------------------------------------------------------- default sentiment process
-default_sentiment_kw={'sentiment_fluct':0.01}
+default_parameter['sentiment']={'sentiment_fluct':0.00}
 
 def sentiment_set_zero():
     def routine(self):
-        self.sentiment=0.
+        self.state['sentiment']=0.
         return 0.
     subprocess_fn=lambda ag,**kw: routine(ag)
     return Operation(subprocess_fn, sub_name='set_zero', name='sentiment', mode='explicit')
 
 def sentiment_set_noise(sigma='def', avg='def'):
     if sigma == 'def':
-        sigma=default_sentiment_kw['sentiment_fluct']
+        sigma=default_parameter['sentiment']['sentiment_fluct']
     if avg == 'def':
         avg=0
     def routine(self, avg, sigma):
-        self.sentiment=np.clip(np.random.normal(avg,sigma),-1.,1.)
-        return self.sentiment
+        self.state['sentiment']=np.clip(np.random.normal(avg,sigma),-1.,1.)
+        return self.state['sentiment']
     subprocess_fn= lambda ag, **kw: routine(ag, avg, sigma)
     return Operation(subprocess_fn, sub_name='set_noise', name='sentiment', mode='explicit',
                      sigma=sigma)
 
 def instantiate_def_sentiment():
-    if default_sentiment_kw['sentiment_fluct']==0.:
+    if default_parameter['sentiment']['sentiment_fluct']==0.:
         return sentiment_set_zero()
     else:
         return sentiment_set_noise()
 def_sentiment=instantiate_def_sentiment()
 
 #-------------------------------------------------------------------------- default prediction process
-default_prediction_kw={}
+default_parameter['prediction']={}
 
 def prediction_linear():
     def routine(self):
-        self.prediction=(self.sentiment+1)/2
-        return self.prediction
+        self.state['prediction']=(self.state['sentiment']+1)/2
+        return self.state['prediction']
     subprocess_fn=lambda ag,**kw: routine(ag)
     return Operation(subprocess_fn, sub_name='linear', name='prediction', mode='explicit')
+
+def prediction_linear_avg():
+    def routine(self):
+        self.state['prediction']=((np.array(self.state['sentiment'])+1)/2).mean()
+        return self.state['prediction']
+    subprocess_fn=lambda ag,**kw: routine(ag)
+    return Operation(subprocess_fn, sub_name='linear_average', name='prediction', mode='explicit')
+
+def prediction_weighted_avg(weights):
+    def routine(self):
+        sentiment_values=(np.array(self.state['sentiment'])+1)/2
+        self.state['prediction']=0
+        for v, w in zip(sentiment_values, weights):
+            self.state['prediction']+=v*w
+        return self.state['prediction']
+    subprocess_fn=lambda ag,**kw: routine(ag)
+    return Operation(subprocess_fn, sub_name='weighted_average', name='prediction', mode='explicit',
+                    weights=weights)
 
 def prediction_linear_taxed(taxation):
     if taxation<1:  #taxation should be provided as a 1-100 percentage
@@ -920,8 +947,8 @@ def prediction_linear_taxed(taxation):
         raise ValueError("taxation must be provided as a 1-100 percentage")      
     taxation/=100
     def routine(self, taxation):
-        linear_pred=self.prediction=(self.sentiment+1)/2
-        self.prediction=linear_pred*(1-taxation)
+        linear_pred=self.state['prediction']=(self.state['sentiment']+1)/2
+        self.state['prediction']=linear_pred*(1-taxation)
     subprocess_fn=lambda ag,**kw: routine(ag, taxation)
     return Operation(subprocess_fn, sub_name='linear_taxed', name='prediction', mode='explicit')
 
@@ -930,61 +957,85 @@ def_prediction=instantiate_def_prediction()
 
 #-------------------------------------------------------------------------- default decision process
 # allow_mkt_subaction=False
+default_parameter['decision']={}
 
-default_decision_kw={}
+default_parameter['decision']['def_d_max']=0.75
+default_parameter['decision']['def_d_min']=0.25
+default_parameter['decision']['def_b_min']=0.0 
 
-default_decision_kw['def_d_max']=0.75
-default_decision_kw['def_d_min']=0.25
-default_decision_kw['def_b_min']=0.0 
+default_parameter['decision']['sw_mode']='beta'
+# default_parameter['decision']['sw_mode']='uniform'
 
-default_decision_kw['sw_mode']='beta'
-# default_decision_kw['sw_mode']='uniform'
+default_parameter['decision']['eta_coeff']=55
+default_parameter['decision']['sw_coeff']='eq_dist'
+default_parameter['decision']['sw_coeff_minmax']=0.020
+default_parameter['decision']['sw_coeff_postmap']=lambda x, **d_kw,: d_kw['sw_coeff_minmax']*(1-x)+(1-d_kw['sw_coeff_minmax']*1)*x
 
-default_decision_kw['eta_coeff']=55
-default_decision_kw['sw_coeff']='eq_dist'
-default_decision_kw['sw_coeff_minmax']=0.020
-default_decision_kw['sw_coeff_postmap']=lambda x, **d_kw,: d_kw['sw_coeff_minmax']*(1-x)+(1-d_kw['sw_coeff_minmax']*1)*x
+default_parameter['decision']['price_fluct']=0.001
+default_parameter['decision']['reference_price']='last'
 
-default_decision_kw['price_fluct']=0.001
-default_decision_kw['reference_price']='last'
-
-default_decision_kw['subaction_par']=0.
+default_parameter['decision']['subaction_par']=0.
+# beta
+# default_parameter['decision']['subaction_par']=1.
 
 
 def def_choice_input(self):
-#     return (self.sigma()-self.prediction)*2-1
-    return self.prediction*2-1
+#     return (self.sigma()-self.state['prediction'])*2-1
+    return self.state['prediction']*2-1
 
 def def_D(p, **d_kw):
     d_max=d_kw['def_d_max']
-    d_min=d_kw['def_d_min']
-        
+    d_min=d_kw['def_d_min']   
     return 1-(d_min+(d_max-d_min)*(1-np.abs(p)**2))
 #     return np.ones(len(p)) CASO LINEARE
 
 def def_B(p, **d_kw):
-    b_min=d_kw['def_b_min']
-    l_min=(1-b_min)
-    
+    l_min=(1-d_kw['def_b_min'])
     return l_min*p
 #     return p
 
-def def_M(p, P, **d_kw):
+#for an action (buy/sell) a fixed proportion d_kw['subaction_par'] will execute that action at market price (any price)
+# 0 nobody, 1/2 half of them, 1 everybody
+def SA_const(p, P, **d_kw):
+    return d_kw['subaction_par']
+ 
+# a proportion d_kw['subaction_par'] times the probability of that action will execute that action at market price (any price)
+def SA_lin(p, P, **d_kw):
     return P(p)*d_kw['subaction_par']
 
+def_SA=SA_lin
 
-# def decision_choice_tr_functional_binomial(D_f, B_f, M_f):
-def decision_choice_tr_functional_binomial():
+def decision_stop_days(stop_days_array):
+    @timer_agent_def_decision
+    def routine(self, stop_days_array, **kw):
+        if kw['time'] in stop_days_array:
+            self.state['decision']='nothing'
+        return 'nothing'
+    subprocess_fn=lambda ag,**kw: routine(ag, stop_days_array, **kw)
+    return Operation(subprocess_fn, sub_name='holidays', name='stop_days', mode='explicit')
+
+
+def decision_choice_tr_functional_binomial(D_fn, B_fn, SA_fn, **decision_parameters):
+    # signature above is more abstract
+    # signature below needs to assume the agent HAS the variables (functions) D_f, B_f, SA_f
+    # def decision_choice_tr_functional_binomial():
+    
+    #deepcopy so that parameters used inside routine will not change if original parameter object is changed
+    d_kw=deepcopy(decision_parameters)
+    D_f=lambda p: D_fn(p, **d_kw)
+    B_f=lambda p: B_fn(p, **d_kw)
+    SA_f=lambda p, P: SA_fn(p, P, **d_kw)
+
     @timer_agent_def_decision
     @timer_agent_def_sample_choice
     def routine(self):
         to_evaluate=self.sp_choice_input(self)   #which in default case correspond to sentiment
 
-        prob_something=self.D_f(to_evaluate)
+        prob_something=D_f(to_evaluate)
         #P(Buy|Smt)-P(Sell|smt)=B
         #P(Buy|Smt)+P(Sell|smt)=1 ---> P(S|s)=1-P(B|s)
         #P(B|s)-(1-P(B|s))=B   ----> P(B|s)=(B+1)/2
-        prob_buy_condt=(self.B_f(to_evaluate)+1)/2
+        prob_buy_condt=(B_f(to_evaluate)+1)/2
 
         if np.abs(to_evaluate)>1:
             print("ERROR: to_evaluate=",to_evaluate)
@@ -995,44 +1046,43 @@ def decision_choice_tr_functional_binomial():
             else:
                 decision='sell'
         else:
-            self.decision='nothing'
+            self.state['decision']='nothing'
             return 'nothing'
 
 #         if allow_mkt_subaction:
     #         print("WARNING: USING A DEPRECATED (NOT CURRENTLY TESTED) VERSION OF THE DEFAULT DECISION PROCESS")
         if decision =='buy' :   #not tested after 2.7
-            if np.random.binomial(1,self.M_f(to_evaluate, #this is sloppy should rework concept of subaction
+            if np.random.binomial(1, SA_f(to_evaluate, #this is sloppy should rework concept of subaction
                                              lambda _: prob_something*prob_buy_condt)):
                 decision+='_mkt'
         if decision =='sell':   #not tested after 2.7
-            if np.random.binomial(1,self.M_f(to_evaluate, #this is sloppy should rework concept of subaction
+            if np.random.binomial(1, SA_f(to_evaluate, #this is sloppy should rework concept of subaction
                                              lambda _: prob_something*(1-prob_buy_condt))):
                 decision+='_mkt'
 
-        self.decision=decision
+        self.state['decision']=decision
         return decision
     subprocess_fn=lambda ag,**kw: routine(ag)
     return Operation(subprocess_fn, sub_name='functional_binomial', name='tr_choice', mode='explicit')
 
-# def_choice_tr= lambda :decision_choice_tr_functional_binomial(def_D, def_B, def_M)
-instantiate_def_choice_tr= lambda :decision_choice_tr_functional_binomial()
+instantiate_def_choice_tr= lambda :decision_choice_tr_functional_binomial(def_D, def_B, def_SA, **default_parameter['decision'])
 # def_def_choice_tr=instantiate_def_choice_tr()
 
 def decision_price_tr_gaussian_multiplicative(ref_price='def', price_fluct='def'):
     if ref_price == 'def':
-        ref_price  =default_decision_kw['reference_price']
+        ref_price  =default_parameter['decision']['reference_price']
     if price_fluct=='def':
-        price_fluct=default_decision_kw['price_fluct']
+        price_fluct=default_parameter['decision']['price_fluct']
         
     @timer_agent_def_decision
     @timer_agent_def_sample_price
     def routine(self, ref_price, price_fluct):
-        if self.decision=='nothing':
+        if self.state['decision']=='nothing':
             self.price='not_req'
             return 'not_req'
 
         #sampling price from gaussian multiplicative
-        if 'mkt' not in self.decision:
+        if 'mkt' not in self.state['decision']:
             mkt_price=self.book.get_last_price(mode=ref_price)
     #         if stochastic_mode=='add': deprecated and should be conceptually incorrect
     #             price=mkt_price+np.random.normal(0,price_fluct)
@@ -1041,11 +1091,11 @@ def decision_price_tr_gaussian_multiplicative(ref_price='def', price_fluct='def'
                 if rnd_prc>=0.: price=mkt_price*(1+rnd_prc)
                 if rnd_prc<0.:  price=mkt_price/(1-rnd_prc)
 
-        #price if subaction is 'mkt' (agent decide to buy at market price (any price))
-        if 'mkt' in self.decision:
-            if 'buy' in self.decision:
+        #price if subaction is 'mkt' (agent decides to buy at market price (any price))
+        if 'mkt' in self.state['decision']:
+            if 'buy' in self.state['decision']:
                 price=self.book.get_worst_sell_offer()
-            if 'sell' in self.decision:
+            if 'sell' in self.state['decision']:
                 price=self.book.get_worst_buy_offer()
 
         self.price=price
@@ -1054,21 +1104,64 @@ def decision_price_tr_gaussian_multiplicative(ref_price='def', price_fluct='def'
     return Operation(subprocess_fn, sub_name='gaussian_multiplicative', name='tr_price', mode='explicit', 
                       ref=ref_price, sigma=price_fluct )
 
+def decision_price_tr_onesided_gaussian_multiplicative(ref_price='def', price_fluct='def'):
+    if ref_price == 'def':
+        ref_price  =default_parameter['decision']['reference_price']
+    if price_fluct=='def':
+        price_fluct=default_parameter['decision']['price_fluct']
+        
+    @timer_agent_def_decision
+    @timer_agent_def_sample_price
+    def routine(self, ref_price, price_fluct):
+        if self.state['decision']=='nothing':
+            self.price='not_req'
+            return 'not_req'
+
+        #sampling price from gaussian multiplicative
+        if 'mkt' not in self.state['decision']:
+            mkt_price=self.book.get_last_price(mode=ref_price)
+    #         if stochastic_mode=='add': deprecated and should be conceptually incorrect
+    #             price=mkt_price+np.random.normal(0,price_fluct)
+            if stochastic_mode=='mult':
+                rnd_prc=np.random.normal(0, price_fluct)
+                ####################################### code for ONESIDED
+                if 'buy' in self.state['decision']:
+                    rnd_prc=-np.abs(rnd_prc)
+                if 'sell' in self.state['decision']:
+                    rnd_prc= np.abs(rnd_prc)
+                #######################################
+                if rnd_prc>=0.: price=mkt_price*(1+rnd_prc)
+                if rnd_prc<0.:  price=mkt_price/(1-rnd_prc)
+
+        #price if subaction is 'mkt' (agent decides to buy at market price (any price))
+        if 'mkt' in self.state['decision']:
+            if 'buy' in self.state['decision']:
+                price=self.book.get_worst_sell_offer()
+            if 'sell' in self.state['decision']:
+                price=self.book.get_worst_buy_offer()
+
+        self.price=price
+        return price
+    subprocess_fn=lambda ag,**kw: routine(ag, ref_price, price_fluct)
+    return Operation(subprocess_fn, sub_name='onesided_gaussian_multiplicative', name='tr_price', mode='explicit', 
+                      ref=ref_price, sigma=price_fluct )
 instantiate_def_price_tr=lambda :decision_price_tr_gaussian_multiplicative()
-# def_price_tr=instantiate_def_price_tr()                    
+# beta
+# instantiate_def_price_tr=lambda :decision_price_tr_onesided_gaussian_multiplicative()
+        
 
 def decision_wealth_tr_uniform():
     @timer_agent_def_decision
     @timer_agent_def_sample_wealth
     def routine(self): 
-        if self.decision=='nothing':
+        if self.state['decision']=='nothing':
             self.wealth_tr=0
             self.quantity=0
             return 0
         
-        if self.decision=='buy':
+        if self.state['decision']=='buy':
             max_q=self.wealth    
-        if self.decision=='sell':
+        if self.state['decision']=='sell':
             max_q=self.stock*self.price
 
         #sampling from uniform distribution (does not require any other operation)
@@ -1086,30 +1179,30 @@ def decision_wealth_tr_uniform():
 def decision_wealth_tr_parametric_balanced(sw_coeff='def', sw_coeff_postmap='def', sw_mode='def', eta_coeff='def'):
     #about distribution we are sampling from
     if sw_mode=='def':
-        sw_mode=default_decision_kw['sw_mode']
+        sw_mode=default_parameter['decision']['sw_mode']
     if sw_mode=='beta':
         if eta_coeff=='def':
-            eta_coeff=default_decision_kw['eta_coeff']
+            eta_coeff=default_parameter['decision']['eta_coeff']
             
     #about parameter of that distribution 
     if sw_coeff=='def':
-        sw_coeff=default_decision_kw['sw_coeff']
+        sw_coeff=default_parameter['decision']['sw_coeff']
     if sw_coeff_postmap=='def': #this could yield unexpected behaviour if not cared properly
-        local_kw_copy=deepcopy(default_decision_kw)  #<----------- TO AVOID MUTABLE IN LAMBDA
+        local_kw_copy=deepcopy(default_parameter['decision'])  #<----------- TO AVOID MUTABLE IN LAMBDA
         sw_coeff_postmap=lambda x: local_kw_copy['sw_coeff_postmap'](x, **local_kw_copy) 
 
         
     @timer_agent_def_decision
     @timer_agent_def_sample_wealth
     def routine(self, sw_mode, eta_coeff, sw_coeff, sw_coeff_postmap): 
-        if self.decision=='nothing':
+        if self.state['decision']=='nothing':
             self.wealth_tr=0
             self.quantity=0
             return 0
 
-        if self.decision=='buy':
+        if 'buy' in self.state['decision']:
             max_q=self.wealth    
-        if self.decision=='sell':
+        if 'sell' in self.state['decision']:
             max_q=self.stock*self.price
 
         #sampling from mode complex distributions
@@ -1142,9 +1235,9 @@ def decision_wealth_tr_parametric_balanced(sw_coeff='def', sw_coeff_postmap='def
                      dist=sw_mode, coeff=sw_coeff)
 
 def instantiate_def_wealth_tr():
-    if default_decision_kw['sw_mode']=='uniform':
+    if default_parameter['decision']['sw_mode']=='uniform':
         return decision_wealth_tr_uniform()
-    elif default_decision_kw['sw_mode']=='beta':
+    elif default_parameter['decision']['sw_mode']=='beta':
         return decision_wealth_tr_parametric_balanced()
 # def_wealth_tr=instantiate_def_wealth_tr()
 
@@ -1153,8 +1246,8 @@ def decision_cut_too_small_tr():
     @timer_agent_def_decision
     def routine(self): #this ext_kwargs not used in default behaviour
 
-        if self.decision!='nothing' and self.wealth_tr<0.01:
-            self.decision='nothing'
+        if self.state['decision']!='nothing' and self.wealth_tr<0.01:
+            self.state['decision']='nothing'
             self.quantity=0.
             self.wealth_tr=0.
             self.price='not_req'
@@ -1177,7 +1270,7 @@ def instantiate_def_decision():
 def_decision=instantiate_def_decision()
 
 #-------------------------------------------------------------------------- default action process
-default_action_kw={}
+default_parameter['action']={}
 
 def action_call_book():
 
@@ -1185,15 +1278,15 @@ def action_call_book():
     def routine(self):
 
         if debug:
-            print("agent",self.id,"decision:", self.decision)
+            print("agent",self.id,"decision:", self.state['decision'])
             print("agent current wealth:", self.wealth,"; current stock:", self.stock)
-            if self.decision!='nothing':
+            if self.state['decision']!='nothing':
                 print("willing at price", self.price, "for quantity:", self.quantity) 
-        if self.decision=='nothing':
+        if self.state['decision']=='nothing':
             return 'nothing'
-        elif 'buy' in self.decision:
+        elif 'buy' in self.state['decision']:
             order_type='buy'
-        elif 'sell' in self.decision:
+        elif 'sell' in self.state['decision']:
             order_type='sell'
 
         if self.quantity>0:  #this check should always be true (check is done in decision)
@@ -1222,21 +1315,9 @@ def _re_instantiate_default_fn():
     def_action    =instantiate_def_action()    
 
 def change_default_parameter(process, parameter, value):
-    if process=='preliminar':
-        global default_preliminar_kw
-        default_preliminar_kw[parameter]=value
-    if process=='sentiment':
-        global default_sentiment_kw
-        default_sentiment_kw[parameter]=value
-    if process=='prediction':
-        global default_prediction_kw
-        default_prediction_kw[parameter]=value
-    if process=='decision':
-        global default_decision_kw
-        default_decision_kw[parameter]=value
-    if process=='action':
-        global default_action_kw
-        default_action_kw[parameter]=value
+    global default_parameter
+    default_parameter[process][parameter]=value
+    
     _re_instantiate_default_fn()
     
 def change_default_process(process, function):
@@ -1255,37 +1336,36 @@ def change_default_process(process, function):
     if process=='action':
         global instantiate_def_action
         instantiate_def_action=lambda :function
-    _re_instantiate_default_fn
+    _re_instantiate_default_fn()
 
+def activate_beta():
+    global default_parameter
+    default_parameter['decision']['subaction_par']=1.
+    
+    global instantiate_def_price_tr
+    instantiate_def_price_tr=lambda : decision_price_tr_onesided_gaussian_multiplicative()
+
+    _re_instantiate_default_fn()
 
 class Qecon:
-
+        
     def __repr__(self):
         dir_info=" Agent "+str(self.id)+" of partition "+str(self.group)
         dir_info+="\n sigma {:.4f}  tot wealth: {:.2f}".format(self.sigma(), self.tot_wealth())
 #         print(dir_info)
         return dir_info
    
-    def __init__(self, idx=None, partition='gen', wealth=5000, stock=50,  kind='def', 
+    def __init__(self, idx=None, kind='def', partition='gen', wealth=5000, stock=50, 
                  keep_tr_memory=False, keep_all_tr_memory=False):
         self.id=idx
         self.group=partition
         
         self.wealth=wealth
         self.stock=stock
+        self.price=0.    # decided price for current transaction
+        self.quantity=0. # decided quantity for current transaction
         
-        self.book=None
-        self.my_pers_kwargs={}
-        
-        self.sentiment=0.
-        self.prediction=0.
-        self.decision='nothing'
-        self.price=0.
-        self.quantity=0.
-        
-        self.last_sentiment=0.
-        #can be generalized to all his internal variables if needed
-
+        self.book=None 
 #         self.executed=False
         self.traded_quantity=0.
         self.transaction_today=[]
@@ -1293,45 +1373,78 @@ class Qecon:
         self.keep_tr_memory=keep_tr_memory  #if true it will allow to fill tr_today and tr_history
         self.keep_all_tr_memory=keep_all_tr_memory #if true it will allow to fill tr_history
         
+#         self.sentiment=0.
+#         self.prediction=0.
+#         self.decision='nothing'
+#         self.last_sentiment=0.
+        #can be generalized to all his internal variables if needed
+
+        self.state={}
         self.process={}
+        self.parameter={}
+        
+        self.state['sentiment']=0.
+        self.state['last_sentiment']=0.
+        self.state['prediction']=0.5
+        self.state['decision']='nothing'
+        
         if kind=='def':
-            self.process['preliminar']=[]
-            self.process['sentiment'] =[]
-            self.process['prediction']=[]
-            self.process['decision']  =[]
-            self.process['action']    =[]
+            #defined inside 'kind' for no lack of generality
+            #every set_process(name,...) silently initialize that process
             self.set_process('preliminar', def_preliminar)
             self.set_process('sentiment',  def_sentiment)
             self.set_process('prediction', def_prediction)
             self.set_process('decision',   def_decision)
             self.set_process('action',     def_action)
             
-#         if kind=='empty':
+            # needed for evaluating distance from equilibrium
+            #do not like it but best solution (deepcopy ensure this is a snapshot of current B ansatz)
+                #ERROR WHEN AN AGENT CHANGES ITS B ANSATZ AFTER DEFINITION
+            self.my_B=lambda p: def_B(p, **deepcopy(default_parameter['decision'])  )
+
+            self.sp_choice_input=def_choice_input
+    
+        elif kind=='noise':
+            #defined inside 'kind' for no lack of generality
+            #every set_process(name,...) silently initialize that process
+            self.set_process('preliminar', preliminar_nothing() )
+            self.set_process('sentiment',  sentiment_start_at_value(0) )
+            self.set_process('prediction', def_prediction)
+            self.set_process('decision',   def_decision)
+            self.set_process('action',     def_action)
+            
+            # needed for evaluating distance from equilibrium
+            #do not like it but best solution (deepcopy ensure this is a snapshot of current B ansatz)
+                #ERROR WHEN AN AGENT CHANGES ITS B ANSATZ AFTER DEFINITION
+            self.my_B=lambda p: def_B(p, **deepcopy(default_parameter['decision']) )
+            
+            self.sp_choice_input=lambda *args, **kwargs: 0 
+        
+#         if kind=='empty': this code is deprecated in 2.10; also never used empty agents
 #             self.my_pers['sentiment'] =[null_kwfn]
 #             self.my_pers['prediction']=[null_kwfn]
 #             self.my_pers['decision']  =[null_kwfn]
 #             self.my_pers['action']    =[null_kwfn]
+        else:
+            raise ValueError(f"Unknown agent kind {kind}")
 
-        #once the agent is instanced, these are all fixed
-        #changing agent.kwargs does not change these functions (I think)
-        local_ddkw_copy=deepcopy(default_decision_kw)
-        self.D_f=lambda theta: def_D(theta, **local_ddkw_copy)
-        self.B_f=lambda theta: def_B(theta, **local_ddkw_copy)
-        self.M_f=lambda theta, fn: def_M(theta, fn, **local_ddkw_copy)
-#         self.sw_distr=def_sw_distr deprecated
-#         self.sw_coeff=def_sw_coeff
-        self.sp_choice_input=def_choice_input
-#         self.sp_choice_tr   =def_choice_tr()
-#         self.sp_price_tr    =def_price_tr()
-#         self.sp_wealth_tr   =def_wealth_tr()
-       
-        
     #every agent has a dictionary of functions 
     #  representing his way of processing information (process['sentiment'] etc )
     #every agent stores internally the results of these process
     #  represent the "agent knows what he is doing" principle
     #agent function never call each other but looks at stored processed info
     #  for ease of programming reason
+    #processes are divided in PRELIMINAR, THOUGHT, ACTION
+    #  preliminar is executed before beginning of the step
+    #  thought and action are divided for "conceptual" understanding
+    #  broadly, thought should only modify agent state, action eveutually external variables
+    #there is thus a hierarchy like: 
+    #  superprocess (preliminar, thought, action)
+    #  process(sentiment, prediction, decision, action)
+    #  operations(the way each one of these is executed)
+    #currently the relation between superprocess and process is fixed but could be generalized
+    def clear_process(self, process_name):
+        self.process[process_name]=[]
     
     @timer_agent_tot_preliminar
     def process_preliminar(self, **ext_args):
@@ -1368,7 +1481,10 @@ class Qecon:
 #                         print("       last result:", subprocess.last_result)
         
             
-    def set_process(self, process_name, subprocess):               
+    def set_process(self, process_name, subprocess): 
+        if process_name not in self.process:
+            self.process[process_name]=[] #<--- silently initializing process
+            
         if isinstance(subprocess, (list,tuple)):
             self.process[process_name]=[*subprocess]
         else:
@@ -1445,8 +1561,8 @@ class Qecon:
     def equilibrium(self, tr='prop', price=None):
         if price==None:
             price=self.book.get_last_price(mode='last')
-        my_b=self.B_f(self.sp_choice_input(self))
-#         my_b=self.B_f(self.prediction*2-1, **self.decision_kw)
+        my_b=self.my_B(self.sp_choice_input(self))
+#         my_b=self.B_f(self.state['prediction']*2-1, **self.decision_kw)
         if tr=='diff':                            #SKETCHY non mi piace ci siano due modi per vedere sigma
             return my_b                        #sono uno la trasformazione lineare dell'altro da -1,1 a 0,1
         elif tr=='prop':                             #vedo qual è più interpretabile (credo prop) e tengo solo quello
@@ -1457,13 +1573,13 @@ class Qecon:
         exp_equi=self.equilibrium(tr, price)
         return my_sigma-exp_equi
                 
-    def take_kwargs(self, kwargs):
-        if kwargs==None:
+    def take_parameters(self, parameters):
+        if parameters==None:
             return
-        for argname, argval in kwargs.items():
-#             if argname in my_pers_kwargs:
+        for parname, parval in parameters.items():
+#             if argname in parameter:
 #                 print("WARNING ", argname," already defined")
-            self.my_pers_kwargs[argname]=argval
+            self.parameter[parname]=parval
     
     def clear(self):
         try:
@@ -1475,15 +1591,15 @@ class Qecon:
             print("agent", self.id,"wealth:", self.wealth)
                   
 #         self.executed=False
-        self.decision='nothing'
+        self.state['decision']='nothing'
         self.price=None
         self.traded_quantity=0.
         self.transaction_today=[]
         
     def afterwarmup_clear(self):
-        self.sentiment=0.
-        self.prediction=0.
-        self.decision='nothing'
+        self.state['sentiment']=0.
+        self.state['prediction']=0.
+        self.state['decision']='nothing'
         self.price=0.
         self.quantity=0.
 #         self.executed=False
@@ -1793,7 +1909,7 @@ class Book:
             
 class Market:
   
-    def __init__(self, N_agents=0, book=None, start_price=100., 
+    def __init__(self, book=None, start_price=100., # N_agents=0, deprecated 
                  start_date=date.today(), network='empty', warmup_steps=0,
                  kind='def', process_preliminar=True, init_func=None, 
                  program_mode=None, exogenous_price=None):
@@ -1819,17 +1935,17 @@ class Market:
                
         self.n_agents=0 #this value is updated by self.add_agent
         self.agents={}
-        if N_agents>0:
-            self.add_partition(name='group_0', size=N_agents)
+#         if N_agents>0:
+#             self.add_partition(name='group_0', size=N_agents)
 #         self.agents={i: Qecon(Id=i, kind=kind) for i in range(N_agents)}
 #         self.agent_partition={'gen':{ag.id:ag for ag in self.agents.values()}}
 
         self.start_date=start_date
-
-        self.set_network(network)
+        self.date=start_date
 
         self.time=0
         
+        self.set_network(network)
         self.process_preliminar=process_preliminar
         
         self.special_fn={'pre': null_kwfn,'post': null_kwfn}
@@ -1884,7 +2000,7 @@ class Market:
 ####################################################################### PARTITION/AGENTS FUNCTION
     #market can be created empty if no n_agents is specified (or set to 0)
 
-    def add_agent(self, sigma_prop=0.5, tot_wealth=10000, partition_name='group_0', idx='auto'):
+    def add_agent(self, kind='def', sigma_prop=0.5, tot_wealth=10000, partition_name='group_0', idx='auto'):
         
         #estabilishing agent partition
         #if none is specified, it will be assigned to 'gen'
@@ -1909,7 +2025,7 @@ class Market:
         assert sigma_prop>=0. and sigma_prop<=1.
         stock=sigma_prop*tot_wealth/curr_price
         money=tot_wealth-stock*curr_price
-        new_agent=Qecon(idx=idx, stock=stock, wealth=money, partition=partition_name)
+        new_agent=Qecon(idx=idx, kind=kind, stock=stock, wealth=money, partition=partition_name)
         
         #linking market with this agent
         self.n_agents+=1
@@ -1929,7 +2045,7 @@ class Market:
     #    in which case a sampling is performed with tot_wealth_avg and/or sigma_prop_avg
     # the parameters "parname"_avg are used only if "parname" (tot_wealth and sigma_prop) are a string
     #    which means they are only used if a sampling is requested
-    def add_partition(self, size=0, name='auto', 
+    def add_partition(self, size=0, name='auto', kind='def',
                       tot_wealth=10000, sigma_prop=0.5, tw_avg=10000, sp_avg=0.5):
         if name=='auto':
             if 'group_0' in self.agent_partition:
@@ -1948,7 +2064,7 @@ class Market:
         
         if VERBOSITY_MODE:
             print()
-            print("Building partition", name,"of", size,"agents")
+            print("Building partition", name,": ", size,"agents of kind", kind)
             print()
         if not isinstance(tot_wealth, str):
             if VERBOSITY_MODE: print("  all agents tot_wealth will be:", tot_wealth)
@@ -1964,7 +2080,7 @@ class Market:
         tot_wealth_sample= _kw_to_sampler(tot_wealth, avg=tw_avg, low=100, high=2*tw_avg-100, sample_size=size)() 
         
         for sp, tw in zip(sigma_prop_sample, tot_wealth_sample) :
-            self.add_agent(sigma_prop=sp, tot_wealth=tw, partition_name=name)
+            self.add_agent(sigma_prop=sp, tot_wealth=tw, partition_name=name, kind=kind)
             
 
     def get_part_agents(self, partition_name):
@@ -2009,6 +2125,12 @@ class Market:
             for ag in self.agent_partition[name].values():
                 ag.group=name
                 
+    def clear_part_process(self, partition_name, process_name):
+        if partition_name in self.agent_partition:
+            for ag in self.agent_partition[partition_name].values():
+                ag.clear_process(process_name)
+        
+                
     #agent in partition_name will have their 'process' defined by fn    
     def set_part_fn(self, partition_name, process, fn):
         if partition_name in self.agent_partition:
@@ -2022,39 +2144,39 @@ class Market:
              
     #agent in partition_name will have their 'sentiment' defined by fn 
     #if any process is already present it will be overwritten
-    def set_part_sentiment(self, partition_name, fn):
+    def set_part_sentiment(self, partition_name, fn): 
         self.set_part_fn(partition_name, 'sentiment', fn)
     
     #all agents in market will have their 'sentiment' defined by fn
     #if any process is already present it will be overwritten
-    def set_all_agent_sentiment(self, fn):
+    def set_all_agent_sentiment(self, fn): 
         self.set_all_agent_fn('sentiment', fn)
     
-    #since sentiment process can be composed of multiple subprocesses, it needs a function for adding a process
-    
-    #agent in partition_name will add fn to their sentiment processes
-    def add_part_sentiment(self, partition_name, fn):
+    #since each process can be composed of multiple subprocesses, it needs a function for adding a process
+    def add_part_fn(self, partition_name, process, fn):
         if partition_name in self.agent_partition:
             for ag in self.agent_partition[partition_name].values():
-                ag.add_sentiment_process(fn)
+                ag.add_process(process,fn)
+    
+    #agent in partition_name will add fn to their sentiment processes
+    def add_part_sentiment(self, partition_name, fn): 
+        self.add_part_fn(partition_name, 'sentiment', fn)
     
     #all agents in market will add fn to their sentiment processes
     def add_all_agent_sentiment(self, fn):
         for partition_name in self.agent_partition:
             self.add_part_sentiment(partition_name, fn)
-        
-        
-        
-    def give_part_kwargs(self, partition_name, partition_kwargs):
+
+    def give_part_parameters(self, partition_name, partition_parameters):
         if partition_name in self.agent_partition:
             for ag in self.agent_partition[partition_name].values():
-                ag.take_kwargs(kwargs=partition_kwargs)  
+                ag.take_parameters(parameters=partition_parameters)  
     
                     
     # shared_fn must be in signature fn(mkt, **kw) and return some value 
     # that returned value will be assigned at each step to sentiment of {partition_name}
     def _struct_part_sentiment_byshared(self, partition_name, shared_fn, _struct_op,
-                                        info_name='auto', operation=None ):
+                                        info_name='auto', math_operation=None, index=None ):
     # name will be info_
         if info_name=='auto':
             info_name='info_'+str(len(self.compute_shared_info)-self.info_trend-self.info_mavdiff)
@@ -2063,22 +2185,22 @@ class Market:
     #     partition partition_name take that info
     
         if _struct_op=='set':
-            if operation is None:
-                operation='set' 
+            if math_operation is None:
+                math_operation='set' 
                 #<-------- when requesting a (re)setting of process, 
                 #          default behaviour should be assignation operation for that sentiment subprocess
                 #  meaning since it is the first value to be computed, it also needs to initialize that value
-            if operation!='set':
-                print("WARNING operation",operation,"while structural operation is",_struct_op) 
-            self.set_part_sentiment(partition_name, sentiment_take_from_shared(info_name, operation=operation))
+            if math_operation!='set':
+                print("WARNING math_operation",math_operation,"while structural operation is",_struct_op) 
+            self.set_part_sentiment(partition_name, sentiment_take_from_shared(info_name, math_operation=math_operation, index=index))
             
         if _struct_op=='add':
-            if operation is None:
-                operation='add'
+            if math_operation is None:
+                math_operation='add'
                 #<-------- when requesting an additional process, 
-                #          default behaviour should be addition operation for that sentiment subprocess
+                #          default behaviour should be addition math_operation for that sentiment subprocess
                 #  meaning since it is not the first value to be computed, it should be an additive subprocess 
-            self.add_part_sentiment(partition_name, sentiment_take_from_shared(info_name, operation=operation)) 
+            self.add_part_sentiment(partition_name, sentiment_take_from_shared(info_name, math_operation=math_operation, index=index)) 
         
                 
                 
@@ -2087,7 +2209,7 @@ class Market:
     # trend_multi_basic(market, multi_distance=[1,7,14,30,90,180, 365], end=-1, oneperc_sent=None,
     #                  focus='day', mode='abs', weights=None, return_mode='avg', apply_norm='tanh')
     def _struct_part_sentiment_bytrend(self, partition_name, trend_type, _struct_op,
-                                       operation,  **trend_kw):
+                                       math_operation, index=None, **trend_kw):
     #     choosing trend function
         if trend_type in ['basic', 'B']:
             trend_fn=lambda self, **ext_kw: trend_basic(self,**trend_kw)
@@ -2099,11 +2221,11 @@ class Market:
         self.info_trend+=1
         
         self._struct_part_sentiment_byshared(partition_name, trend_fn, _struct_op,
-                                             info_name=info_name,operation=operation) 
+                                             info_name=info_name,math_operation=math_operation, index=index) 
 
         
     def _struct_part_sentiment_bymavdiff(self, partition_name, mavdiff_type, _struct_op,
-                                     operation, **mavdiff_kw):
+                                     math_operation, index=None, **mavdiff_kw):
     #     choosing trend function
         if mavdiff_type in ['basic', 'B']:
             mavdiff_fn=lambda self, **ext_kw: mavdiff_basic(self,**mavdiff_kw)
@@ -2114,35 +2236,45 @@ class Market:
         self.info_mavdiff+=1
         
         self._struct_part_sentiment_byshared(partition_name, mavdiff_fn, _struct_op,
-                                             info_name=info_name, operation=operation)
+                                             info_name=info_name, math_operation=math_operation, index=index)
+    #the 3 functions above are the core process
+    #  which is actually different instances of the abstract process _struct_part_sentiment_byshared
+    #the 3*2 functions below are the application of each of those
+    #  for the two cases of setting the process with this subprocess and adding a subprocess
+    #  it is basically the same thing but more user friendly
+    #  the _struct_op variable of the _struct_part_sentiment goes into the name of the function themselves (set or add)
         
     def set_part_sentiment_byshared(self, partition_name, shared_fn, 
-                                    info_name='auto', operation='set'):          #<----------subprocess operation 
+                                    info_name='auto', math_operation='set', index=None):          #<----------subprocess operation 
         self._struct_part_sentiment_byshared(partition_name, shared_fn, 'set',#<--- structural operation (_struct_op)
-                                             info_name=info_name, operation=operation)
+                                             info_name=info_name, math_operation=math_operation, index=index)
             
     def add_part_sentiment_byshared(self, partition_name, shared_fn, 
-                                    info_name='auto', operation='add'):          #<----------subprocess operation 
+                                    info_name='auto', math_operation='set', index=None):          #<----------subprocess operation 
         self._struct_part_sentiment_byshared(partition_name, shared_fn, 'add',#<--- structural operation (_struct_op)
-                                             info_name=info_name, operation=operation)    
+                                             info_name=info_name, math_operation=math_operation, index=index)    
         
-    def set_part_sentiment_bytrend(self, partition_name, trend_type, operation='set',#<----------subprocess operation 
+    def set_part_sentiment_bytrend(self, partition_name, trend_type, 
+                                   math_operation='set', index=None, #<----------subprocess (math) operation 
                                    **trend_kw):
         self._struct_part_sentiment_bytrend(partition_name, trend_type, 'set',#<--- structural operation (_struct_op)
-                                       operation,  **trend_kw)           
-    def add_part_sentiment_bytrend(self, partition_name, trend_type, operation='add',#<----------subprocess operation 
+                                       math_operation=math_operation, index=index, **trend_kw)           
+    def add_part_sentiment_bytrend(self, partition_name, trend_type, 
+                                   math_operation='set', index=None, #<----------subprocess (math) operation 
                                    **trend_kw):
         self._struct_part_sentiment_bytrend(partition_name, trend_type, 'add',#<--- structural operation (_struct_op)
-                                       operation,  **trend_kw) 
+                                       math_operation=math_operation, index=index, **trend_kw) 
         
-    def set_part_sentiment_bymavdiff(self, partition_name, trend_type, operation='set',#<----------subprocess operation 
+    def set_part_sentiment_bymavdiff(self, partition_name, trend_type, 
+                                     math_operation='set', index=None, #<----------subprocess (math) operation 
                                    **mavdiff_kw):
         self._struct_part_sentiment_bymavdiff(partition_name, trend_type, 'set',#<--- structural operation (_struct_op)
-                                       operation,  **mavdiff_kw)         
-    def add_part_sentiment_bymavdiff(self, partition_name, trend_type, operation='add',#<----------subprocess operation
+                                       math_operation=math_operation, index=index, **mavdiff_kw) 
+    def add_part_sentiment_bymavdiff(self, partition_name, trend_type, 
+                                     math_operation='set', index=None, #<----------subprocess (math) operation
                                    **mavdiff_kw):
         self._struct_part_sentiment_bymavdiff(partition_name, trend_type, 'add',#<--- structural operation (_struct_op)
-                                       operation,  **mavdiff_kw)                                         
+                                       math_operation=math_operation, index=index, **mavdiff_kw)                                         
 
 # queste due differiscono solo per set_part(con set_prt) e add_part (con add_part) 
 # ed il warning se si prova a settare con add
@@ -2505,9 +2637,9 @@ class Market:
     def ev_metric_start_step(self, **kwargs):
         #--------------------------------------------------- default global metrics
         self.metric['daily_price']['open'].append(self.book.get_last_price(mode='last'))
-        self.metric['daily_price']['avg'].append(0)
-        self.metric['daily_price']['max'].append(0)
-        self.metric['daily_price']['min'].append(0)
+        self.metric['daily_price']['avg'].append(self.book.get_last_price(mode='last'))
+        self.metric['daily_price']['max'].append(self.book.get_last_price(mode='last'))
+        self.metric['daily_price']['min'].append(self.book.get_last_price(mode='last'))
         
         self.metric['daily_count']['buy'].append(0)
         self.metric['daily_count']['sell'].append(0)
@@ -2522,7 +2654,7 @@ class Market:
         #--------------------------------------------------- default partition metrics
         for partition_name in self.agent_partition:
             
-            self.partition_metric['avg_sent'][partition_name].append(0)
+            self.partition_metric['avg_sent'][partition_name].append([])
             self.partition_metric['avg_pred'][partition_name].append(0)
             self.partition_metric['daily_count']['buy'][partition_name].append(0)
             self.partition_metric['daily_count']['sell'][partition_name].append(0)
@@ -2581,14 +2713,14 @@ class Market:
         self.metric['daily_price']['close'].append(self.book.get_last_price(mode='last'))
 
         for agent in self.agents.values():
-            self.metric['daily_count'][agent.decision][-1]+=1
+            self.metric['daily_count'][agent.state['decision']][-1]+=1
             
          #------------------------------------------------------- default partition metrics       
         for agent in self.agents.values():
-            self.partition_metric['daily_count'][agent.decision][agent.group][-1]+=1
+            self.partition_metric['daily_count'][agent.state['decision']][agent.group][-1]+=1
         for partition_name in self.agent_partition:
             part_size=len(self.agent_partition[partition_name])
-            self.partition_metric['avg_sent'][partition_name][-1]/=part_size
+            self.partition_metric['avg_sent'][partition_name][-1]=np.array(self.partition_metric['avg_sent'][partition_name][-1]).mean()
             self.partition_metric['avg_pred'][partition_name][-1]/=part_size      
             for decision in self.partition_metric['daily_count']:
                 self.partition_metric['daily_count'][decision][partition_name][-1]/=part_size
@@ -2883,8 +3015,10 @@ class Market:
             verb_fn=lambda x:x
             
         for t in verb_fn(range(time)):
+            #################################################################default kwargs
             ext_args['market']=self
             ext_args['time']=self.time
+            ext_args['date']=self.date
             
             #################################################################pre-step operations
             #---------------------------clearing today valyes
@@ -2914,9 +3048,10 @@ class Market:
                             
     @timer_market_step
     def _step(self, **ext_args):
+        self.date+= timedelta(days=1)
         #--------------------------looping THOUGHTS over all agents
                                 #  this is needed when thought (sentiment and predictions) 
-                                #  are ALL processed BEFORE action are evaluated 
+                                #  are ALL and IN ORDINE processed BEFORE action are evaluated 
                                 #  Case use is when agents influence each other sentiments, 
                                 #  based on sentiment of last iteration
                                 #  self.process_preliminar is True by default
@@ -2953,8 +3088,8 @@ class Market:
             if debug: print("-"*60)
                    
             #--------------------------inside-loop metric evaluation (partition metric and general metric)
-            self.partition_metric['avg_sent'][actor_partition_name][-1]+=actor.sentiment #stesse considerazioni del how_many actors
-            self.partition_metric['avg_pred'][actor_partition_name][-1]+=actor.prediction
+            self.partition_metric['avg_sent'][actor_partition_name][-1].append(actor.state['sentiment']) #stesse considerazioni del how_many actors
+            self.partition_metric['avg_pred'][actor_partition_name][-1]+=actor.state['prediction']
             #dovrei aggiungere qui funzione generale per valutare partition metric inside step
             
             self.ev_metric_inside_step(**ext_args)
@@ -3034,9 +3169,9 @@ def _kw_to_statefn(what):
     if 'tot' in what and 'wealth' in what:
         state_fn= lambda ag: ag.tot_wealth()
     if 'sent' in what:
-        state_fn= lambda ag: ag.sentiment
+        state_fn= lambda ag: ag.state['sentiment']
     if 'pred' in what:
-        state_fn= lambda ag: ag.prediction
+        state_fn= lambda ag: ag.state['prediction']
         
     #raise error if no correspondence is found 
     return state_fn
@@ -3045,7 +3180,10 @@ def _kw_to_statefn(what):
     
 def change_ratio(a,b,mode='absolute'): #(a=last, b=second_last)
     if 'abs' in mode: #max(last, second)/min(last, second)
-        ratio=(max(a,b)/min(a,b)-1)*100
+        try:
+            ratio=(max(a,b)/min(a,b)-1)*100
+        except:
+            return 0
         if a>b:
             return ratio
         else:
@@ -3294,45 +3432,90 @@ def mavdiff_multi_basic(data, multi_window=[7,30,365], end=-1, oneperc_sent=None
 
 ###################################################################### built-in function (builder) for agent process
     
+# index can be None, in which case state[state_name] is taken as a single value variable
+# if index is not none, the program will try to access state[state_name][index]
+# index can be int, in which case state[state_name] is taken as a list and object at index value is modified
+# index can be a string, in which case state[state_name] is taken as a dictionary
     
-def ag_s_set(ag, v):
-    ag.sentiment=v  
-def ag_s_add(ag, v):
-    ag.sentiment+=v   
-def ag_s_mult(ag, v):
-    ag.sentiment*=v
+def _ag_state_set(ag, state_name, index, v):
+    if index is None:
+        ag.state[state_name]=v
+    else:
+        ag.state[state_name][index]=v
     
-def _kw_to_agent_op(process, op): 
-    if process=='sentiment':
-        if op=='set':
-            return lambda ag, v: ag_s_set(ag, v)
-        if op=='add':
-            return lambda ag, v: ag_s_add(ag, v)
-        if op=='mult':
-            return lambda ag, v: ag_s_mult(ag, v)
+def _ag_state_add(ag, state_name, index, v):
+    if index is None:
+        ag.state[state_name]+=v
+    else:
+        ag.state[state_name][index]+=v
+    
+def _ag_state_mult(ag, state_name, index, v):
+    if index is None:
+        ag.state[state_name]*=v
+    else:
+        ag.state[state_name][index]*=v
+
+def _ag_state_map(ag, state_name, index, map_fn):
+    if index is None:
+        ag.state[state_name]=map_fn(ag.state[state_name])
+    else:
+        ag.state[state_name][index]=map_fn(ag.state[state_name][index])
+
+#in cases where an operation (subprocess) is defined as abstract
+#   such as the cases where the same operation can be performed on different indexes of the state dict
+#   or such as the cases where the same operation can be performed with add/mult and so on
+#   this function makes so that once the abstract function is instantiated,
+#   the program will know what to do and which operation to execute,
+#   instead of re-evaluating it at each call which can waste time
+def _kw_to_agent_op(state_name, op, index): 
+    """
+    state name:
+        is the name of the agent state you want to modify
+        each agent has a dictionary of agent.state, so variable agent.state[state_name] is modified
+    op:
+        is the operation you want to apply to agent.state[state_name]
+        can be set, add, mult[iply] or map
+    index:
+        is the indication on  how to access variable agent.state[state_name] information
+        can be None, in which case state[state_name] is taken as a single value variable
+        if index is not none, the program will try to access state[state_name][index]
+           can be int, in which case state[state_name] is taken as a list and object at index value is modified
+           can be a string, in which case state[state_name] is taken as a dictionary
+    
+    """
+    if op=='set':
+        return lambda ag, v: _ag_state_set(ag, state_name, index, v)
+    if op=='add':
+        return lambda ag, v: _ag_state_add(ag, state_name, index, v)
+    if op=='mult':
+        return lambda ag, v: _ag_state_mult(ag, state_name, index, v)
+    if op=='map':
+        return lambda ag, m: _ag_state_map(ag, state_name, index, m)
 
 __coord_agent_op='set'
 
+#generic function whould have signature(agent, process, operation, index, value)
+
 #at every step, the sentiment value is set at 'sent_value'
 #should be the first in the process     
-def sentiment_bias(sent_value, operation=None):
-    if operation is None:
-        operation=__coord_agent_op 
-    agent_op=_kw_to_agent_op('sentiment', operation) 
+def sentiment_bias(sent_value, math_operation=None, index=None):
+    if math_operation is None:
+        math_operation=__coord_agent_op 
+    agent_op=_kw_to_agent_op('sentiment', math_operation, index) 
     def routine(agent, value, **kw):
         agent_op(agent,value)
         return value
         
     subprocess_fn= lambda a, **kw: routine(a, sent_value, **kw)
     return Operation(subprocess_fn, sub_name='bias', name='sentiment', mode='explicit',
-                      operation=operation, sent_value=sent_value)
+                      math_operation=math_operation, sent_value=sent_value)
 
 #at step 'at_time' the sentiment is set at 'sent_value'
 #should be the last in the process
-def sentiment_set_at_time(sent_value, at_time=0, operation=None):
-    if operation is None:
-        operation=__coord_agent_op 
-    agent_op=_kw_to_agent_op('sentiment', operation)    
+def sentiment_set_at_time(sent_value, at_time=0, math_operation=None, index=None):
+    if math_operation is None:
+        math_operation=__coord_agent_op 
+    agent_op=_kw_to_agent_op('sentiment', math_operation, index)    
     def routine(agent, value, at_time, **kw):
         if kw['time']==at_time:
             agent_op(agent,value)
@@ -3340,14 +3523,14 @@ def sentiment_set_at_time(sent_value, at_time=0, operation=None):
              
     subprocess_fn= lambda a, **kw: routine(a, sent_value, at_time, **kw)
     return Operation(subprocess_fn, sub_name='set_at_time', name='sentiment', mode='explicit',
-                      operation=operation, sent_value=sent_value, at_time=at_time)
+                      math_operation=math_operation, sent_value=sent_value, at_time=at_time)
 
 #at step 0 the sentiment is set at 'sent_value'
 #should be the last in the process
-def sentiment_start_at_value(sent_value, operation=None):
-    if operation is None:
-        operation=__coord_agent_op 
-    agent_op=_kw_to_agent_op('sentiment', operation) 
+def sentiment_start_at_value(sent_value, math_operation=None, index=None):
+    if math_operation is None:
+        math_operation=__coord_agent_op 
+    agent_op=_kw_to_agent_op('sentiment', math_operation, index) 
     def routine(agent, value, **kw):
         if kw['time']==0:
             agent_op(agent,value)
@@ -3355,27 +3538,27 @@ def sentiment_start_at_value(sent_value, operation=None):
         return 0.
     subprocess_fn= lambda a, **kw: routine(a, sent_value, **kw)
     return Operation(subprocess_fn, sub_name='start_at_value', name='sentiment', mode='explicit',
-                      operation=operation, sent_value=sent_value)
+                      math_operation=math_operation, sent_value=sent_value)
 
-def sentiment_add_at_time(sent_value, at_time, operation='add'):    
-    operation='add'                    #this function does not need a operation=set mode
-    agent_op=_kw_to_agent_op('sentiment', operation) 
+def sentiment_add_at_time(sent_value, at_time, math_operation='add', index=None):    
+    math_operation='add'                    #this function does not need a math_operation=set mode
+    agent_op=_kw_to_agent_op('sentiment', math_operation, index) 
     def routine(agent, value, at_time, **kw):
         if kw['time']==at_time:
             agent_op(agent,value)
             return value
     subprocess_fn= lambda a, **kw: routine(a, sent_value, at_time, **kw)
     return Operation(subprocess_fn, sub_name='add_at_time', name='sentiment', mode='explicit',
-                      operation=operation, sent_value=sent_value, at_time=at_time)
+                      math_operation=math_operation, sent_value=sent_value, at_time=at_time)
 
 #every step, the sentiment is set to function value
 #function can be array of values, or a function of time
 #could be the first (if used as time-dependent bias) 
 #could be the last (if used as fixed at that time)
-def sentiment_exogen(function, operation=None):
-    if operation is None:
-        operation=__coord_agent_op
-    agent_op=_kw_to_agent_op('sentiment', operation) 
+def sentiment_exogen(function, math_operation=None, index=None):
+    if math_operation is None:
+        math_operation=__coord_agent_op
+    agent_op=_kw_to_agent_op('sentiment', math_operation, index) 
     def routine(agent, function, **kw):
         curr_time=kw['time']
         try:
@@ -3386,14 +3569,14 @@ def sentiment_exogen(function, operation=None):
         return value
     subprocess_fn= lambda a, **kw: routine(a, function, **kw)
     return Operation(subprocess_fn, sub_name='exogen', name='sentiment', mode='explicit',
-                      operation=operation)
+                      math_operation=math_operation)
 
 #periodic fn needs to be defined in interval [0,1[ for dominio
 #the periodic fn input will be (current_time%period)/period
-def sentiment_periodic(periodic_fn, strenght, period=365, operation=None):
-    if operation is None:
-        operation=__coord_agent_op 
-    agent_op=_kw_to_agent_op('sentiment', operation) 
+def sentiment_periodic(periodic_fn, strenght, period=365, math_operation=None, index=None):
+    if math_operation is None:
+        math_operation=__coord_agent_op 
+    agent_op=_kw_to_agent_op('sentiment', math_operation, index) 
     def routine(agent, periodic_fn, strenght, period, **kw):
         time=kw['time']
         value=strenght*periodic_fn((time%period)/period)
@@ -3401,38 +3584,40 @@ def sentiment_periodic(periodic_fn, strenght, period=365, operation=None):
         return value
     subprocess_fn= lambda a, **kw: routine(a,  periodic_fn, strenght, period, **kw)
     return Operation(subprocess_fn, sub_name='periodic', name='sentiment', mode='explicit',
-                      operation=operation, period=period, strenght=strenght)
+                      math_operation=math_operation, period=period, strenght=strenght)
 
 #additive noise: takes previous sentiment value and add a random value
 #it clips value in -1,1 in case random extraction goes over sentiment dominio
-def sentiment_add_noise(noise_sigma=0.01, operation='mult'):  
-    operation='mult'
-    agent_op=_kw_to_agent_op('sentiment', operation)  
+def sentiment_add_noise(noise_sigma=0.01, math_operation='mult', index=None):  
+    math_operation='mult'
+    agent_op=_kw_to_agent_op('sentiment', math_operation, index)
+    agent_op_map= _kw_to_agent_op('sentiment', 'map', index)
     def routine(agent, noise_sigma, **kw):
         noise_add=np.random.normal(0,noise_sigma)
         agent_op(agent, 1+noise_add)
-        agent.sentiment=np.clip(agent.sentiment*(1+noise_add),-1,1)
-        return agent.sentiment
+        agent_op_map(agent, lambda v: np.clip(v, -1,1))
+        
+        return noise_add
     subprocess_fn= lambda a, **kw: routine(a, noise_sigma, **kw)
     return Operation(subprocess_fn, sub_name='add_noise', name='sentiment', mode='explicit',
-                      operation=operation, noise_sigma=noise_sigma)
+                      math_operation=math_operation, noise_sigma=noise_sigma)
     
-def sentiment_decay(perc, operation='mult'):
-    operation='mult'
-    agent_op=_kw_to_agent_op('sentiment', operation)  
+def sentiment_decay(perc, math_operation='mult', index=None):
+    math_operation='mult'
+    agent_op=_kw_to_agent_op('sentiment', math_operation, index)  
     def routine(agent, perc, **kw):
         agent_op(agent, 1-perc)
-        return agent.sentiment
+        return perc
     subprocess_fn= lambda a, **kw: routine(a, perc, **kw)
     return Operation(subprocess_fn, sub_name='decay', name='sentiment', mode='explicit',
-                      operation=operation, perc=perc)
+                      math_operation=math_operation, perc=perc)
     
 # #mode could be static
 # def sentiment_from_neighbours(mode='static', neigh_filter= lambda x:x, neigh_sentiment_op= lambda x:x.mean()):
 #     def routine(agent, **kw):
 #         network=kw['market'].network
 #         if mode=='static':
-#             agent.sentiment=0
+#             agent.state['sentiment']=0
 #         elif 'autoreg' not in mode:
 #             print("WARNING unknown network op. mode")
 # #network matrix element N[i,j] represent "how much i is unfluenced by j": info flow i<----j
@@ -3443,51 +3628,65 @@ def sentiment_decay(perc, operation='mult'):
 #this routine can retrieve this info and set that as its sentiment value
 #NEED SOME mkt.add_compute_shared_info(function, info_name) TO WORK
 #since no shared info is computed by default
-def sentiment_take_from_shared(info_name, operation=None):
-    if operation is None:
-        operation=__coord_agent_op
-    agent_op=_kw_to_agent_op('sentiment', operation)
+def sentiment_take_from_shared(info_name, math_operation=None, index=None):
+    if math_operation is None:
+        math_operation=__coord_agent_op
+    agent_op=_kw_to_agent_op('sentiment', math_operation, index)
     def routine(agent, info_name, **kw):
         value=kw['market'].shared_among_agents[info_name]
         agent_op(agent,value)
         return value
     subprocess_fn= lambda a, **kw: routine(a, info_name, **kw)
     return Operation(subprocess_fn, sub_name='take_from_shared_computation', name='sentiment', mode='explicit',
-                      operation=operation, info_name=info_name)
+                      math_operation=math_operation, info_name=info_name)
+
+def sentiment_map(map_fn, index=None):
+    agent_op= _kw_to_agent_op('sentiment', 'map', index)
+    def routine(agent, map_fn, **kw):
+        agent_op(agent, map_fn)
+        return 'applied custom mapping'
+    subprocess_fn= lambda a, **kw: routine(a, map_fn, **kw)
+    return Operation(subprocess_fn, sub_name='mapping', name='sentiment', mode='explicit',
+                      math_operation='map')      
     
-def sentiment_clip(minv=-1., maxv=+1., operation=None):
+def sentiment_clip(minv=-1., maxv=+1., index=None):
+    agent_op= _kw_to_agent_op('sentiment', 'map', index)
     def routine(agent, minv, maxv, **kw):
-        agent.sentiment=np.clip(agent.sentiment, minv, maxv) 
-        return agent.sentiment
+        agent_op(agent, lambda v: np.clip(v, minv, maxv))
+        return 'applied clipping'
     subprocess_fn= lambda a, **kw: routine(a,  minv, maxv, **kw)
     return Operation(subprocess_fn, sub_name='norm_clip', name='sentiment', mode='explicit',
                       minv=minv, maxv=maxv)
 
-def sentiment_sigm(steepness=1., operation=None):
+def sentiment_sigm(steepness=1., index=None):
+    agent_op= _kw_to_agent_op('sentiment', 'map', index)
     def routine(agent, steepness, **kw):
-        s=agent.sentiment
-        agent.sentiment=(1 / (1 + np.exp(-s*steepness)))*2-1
-        return agent.sentiment
+#         s=agent.state['sentiment']
+#         agent.state['sentiment']=(1 / (1 + np.exp(-s*steepness)))*2-1
+        agent_op(agent, lambda s: (1 / (1 + np.exp(-s*steepness)))*2-1 )
+        return agent.state['sentiment']
     subprocess_fn= lambda a, **kw: routine(a,  steepness, **kw)
     return Operation(subprocess_fn, sub_name='norm_sigmoid', name='sentiment', mode='explicit',
                       steepness=steepness)
 
-def sentiment_tanh(steepness=1., operation=None):
+def sentiment_tanh(steepness=1., index=None):
+    agent_op= _kw_to_agent_op('sentiment', 'map', index)
     def routine(agent, steepness, **kw):
-        s=agent.sentiment
-        agent.sentiment=np.tanh(s*steepness)
-        return agent.sentiment
+#         s=agent.state['sentiment']
+#         agent.state['sentiment']=np.tanh(s*steepness)
+        agent_op(agent, lambda s: np.tanh(s*steepness) )
+        return agent.state['sentiment']
     subprocess_fn= lambda a, **kw: routine(a,  steepness, **kw)
     return Operation(subprocess_fn, sub_name='norm_tanh', name='sentiment', mode='explicit',
                       steepness=steepness)
 
 def sentiment_normalize(mode='clip', *args, **kwargs):
     if mode=='clip':
-        return sentiment_clip(*args)
+        return sentiment_clip(*args, 'kwargs')
     if mode=='sigm':
-        return sentiment_sigm(*args)
+        return sentiment_sigm(*args, 'kwargs')
     if mode=='tanh':
-        return sentiment_tanh(*args)
+        return sentiment_tanh(*args, 'kwargs')
 
 ################################################################################ built-in inline metric to add
 def mtr_sct_sigma(self, metric_obj, **kwargs):
@@ -3626,7 +3825,7 @@ def plot_sigma_distribution(mkt, show_avg=False, ext_sigma=None, time_sample=10)
 
 def test_agent_decision(Sigma, Theta, to_return='sigma', d_kw=None):
     if d_kw==None:
-        d_kw=default_decision_kw
+        d_kw=default_parameter['decision']
     ag=Qecon()
     ag.decision_kw=d_kw
     puppet_price=100
@@ -3642,35 +3841,35 @@ def test_agent_decision(Sigma, Theta, to_return='sigma', d_kw=None):
     old_wealth=ag.wealth
     
     #setting his theta
-    ag.sentiment=Theta
+    ag.state['sentiment']=Theta
     for subpr in ag.process['prediction']:
         subpr(ag)
     for subpr in ag.process['decision']:
         subpr(ag)    
     
-#     print(ag.decision)
-    if ag.decision=='buy':
+#     print(ag.state['decision'])
+    if ag.state['decision']=='buy':
         ag.process_buy(ag.price, ag.quantity)
-    if ag.decision=='sell':
+    if ag.state['decision']=='sell':
         ag.process_sale(ag.price, ag.quantity)
     
     if to_return=='sigma':
         return ag.sigma()
     elif 'quantity' in to_return:
-        if 'buy' in ag.decision:
+        if 'buy' in ag.state['decision']:
             if 'scaled' in to_return:
                 return ag.quantity/(old_wealth/100)
             return ag.quantity
-        if 'sell' in ag.decision:
+        if 'sell' in ag.state['decision']:
             if 'scaled' in to_return:
                 return -ag.quantity/old_stock
             return -ag.quantity
-        if 'nothing' in ag.decision:
+        if 'nothing' in ag.state['decision']:
             return 0
 
 def test_agent_theta(Theta, sample_size=100, to_return='sigma', d_kw=None):
     if d_kw==None:
-        d_kw=default_decision_kw
+        d_kw=default_parameter['decision']
     sample_results={}
     for sigma_old in np.linspace(0.001,0.999,101):
         sample_results[sigma_old]=[]
@@ -3698,7 +3897,7 @@ def _plot_sigma_test(sigma_new_theta, sample_size, display='sigma', theta='unk')
 #run a diagnostic of agent decisions outcome  (display can be quantity or sigma)
 def diagnostic_agent_decision(sample_size=100, display='quantity', d_kw=None):
     if d_kw is None:
-        d_kw=default_decision_kw
+        d_kw=default_parameter['decision']
         
     print("testing agent decision:")
     print("decision parameters:")
@@ -3759,11 +3958,11 @@ def diagnostic_agent_decision(sample_size=100, display='quantity', d_kw=None):
 def show_decision_functions(**d_kw):
     global def_D
     global def_B
-    global def_M
+    global def_SA
     
     D=lambda x: def_D(x,**d_kw)
     B=lambda x: def_B(x,**d_kw)
-    M=lambda x, f: def_M(x, f, **d_kw)
+    SA=lambda x, f: def_SA(x, f, **d_kw)
     
     p=np.linspace(-1,1,100)
     P_N=lambda pr:1-D(pr)
@@ -3775,7 +3974,7 @@ def show_decision_functions(**d_kw):
     plt.title("ansatz functions")
     plt.plot(p,D(p), label='def_D')
     plt.plot(p,B(p), label='def_B')
-    plt.plot(P_B(p),M(p, P_B), label='def_M')
+    plt.plot(P_B(p),SA(p, P_B), label='def_SA')
     plt.ylim((-1,1))
     plt.xlim((-1,1))
     plt.grid()
@@ -3786,15 +3985,15 @@ def show_decision_functions(**d_kw):
     plt.plot(p,P_N(p), 'c',label="nothing")
     plt.plot(p,P_B(p), 'g',label="buy")
     plt.plot(p,P_S(p), 'r',label="sell")
-    plt.plot(p,P_B(p)*M((p), P_B), 'g--', label="buy at market price")
-    plt.plot(p,P_S(p)*M((p), P_S), 'r--', label="sell at market price")
+    plt.plot(p,P_B(p)*SA((p), P_B), 'g--', label="buy at market price")
+    plt.plot(p,P_S(p)*SA((p), P_S), 'r--', label="sell at market price")
     plt.legend()
     plt.ylim((0,1))
     plt.xlim((-1,1))
     plt.grid()
     
     plt.show()
-show_default_decision_functions=lambda: show_decision_functions(**default_decision_kw)
+show_default_decision_functions=lambda: show_decision_functions(**default_parameter['decision'])
 
 def show_sw_ansatz(**d_kw):
     x=np.linspace(0,1,101)
@@ -3822,7 +4021,7 @@ def show_sw_ansatz(**d_kw):
     plt.grid()
     plt.legend()
     plt.show()
-show_default_sw_ansatz=lambda : show_sw_ansatz(**default_decision_kw)
+show_default_sw_ansatz=lambda : show_sw_ansatz(**default_parameter['decision'])
     
     
 ########################################################################################### LAB
@@ -4173,6 +4372,22 @@ class Lab():
     #     all_fit_results={fit_name: {dominio:[], results: {param_names: {param_values: [{function:[], coeff:[]}] }}}}
     #     all_fit_results['exp']['results'][('theta','gamma')][(0.5,0.8)][0]['function']
     
+#----------------------------------------------------------------------- getmetrics (minimal implementation)
+    def get_multi_metric(self, metric_name):
+        return self.multi_sim_metric[metric_name]
+
+    def get_param_metric(self, metric_name, *more_needed):
+        print("WARNING: get metric not implemented for mode PARAM")
+        return
+
+    def get_metric(self, metric_name, *args, **kwargs):
+        if not len(self.param_sim_metric) and len(self.multi_sim_metric):
+            return get_multi_metric(self, metric_name)
+        elif len(self.param_sim_metric) and not len(self.multi_sim_metric):
+            return get_param_metric(self, metric_name, *args, **kwargs)
+        else:
+            print(" both multi results and param results are present: specify which to get")
+            return
     
     
 #----------------------------------------------------------------------- plotting   
@@ -4534,7 +4749,7 @@ class Lab():
 how_to_use="""
 HOW TO USE: 
 
-NB UPDATED TO 1.7 (some of this might be deprecated)
+NB UPDATED TO 1.7 (ALL OF THIS IS DEPRECATED AND NO LONGER TRUE)
 
 INITIALIZE A BOOK
 bb=Book()
@@ -4559,7 +4774,7 @@ def fn(self, **kwargs)
    it is allowed to act as if it is defined in the agent class itself, and call self. 
    so it can acquire agent specific parameters and modify internal variables
    like  par=self.my_pers_kwargs['par'] (which are given in step before)
-   like  self.sentiment= ... 
+   like  self.state['sentiment']= ... 
 
 SET PARTITIONS-SPECIFIC FUNCTION
 market.set_part_fn(partition_name, what "mental" step it is referred, the function to call)
