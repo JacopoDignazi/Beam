@@ -16,5 +16,7 @@ dependencies:
      - torch==1.9.0
      - pyro-ppl == 1.7.0
      - mplfinance == 0.12.8b6
+     - yfinance == 0.1.74
+     - xlrd == 2.0.1
   - freetype = 2.10.4
   
